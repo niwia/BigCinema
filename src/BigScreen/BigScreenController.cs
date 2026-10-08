@@ -1,4 +1,4 @@
-﻿using System;
+using System;
 using System.Threading;
 using System.Threading.Tasks;
 using BigScreen.Net;
@@ -291,6 +291,21 @@ public class BigScreenController : MonoBehaviour
 
     internal void UserTogglePlay() => Apply(new Request { Action = Session.State.Playing ? Protocol.Action.Pause : Protocol.Action.Play });
     internal void UserSeekRelative(double delta) => Apply(new Request { Action = Protocol.Action.SeekTo, Value = Session.State.ExpectedVideoTime(SafeNetTime()) + delta });
+    // --- Shared queue (user side) --------------------------------------------------------
+
+    internal void UserQueueAdd(string url, string title = "")
+        => Apply(new Request { Action = Protocol.Action.QueueAdd, Text = url, Alt = title });
+
+    internal void UserQueueRemove(int index)
+        => Apply(new Request { Action = Protocol.Action.QueueRemove, Value = index });
+
+    internal void UserQueueClear() => Apply(new Request { Action = Protocol.Action.QueueClear });
+
+    internal void UserQueuePlay(int index)
+        => Apply(new Request { Action = Protocol.Action.QueuePlayIndex, Value = index });
+
+    internal void UserQueueStep(int delta)
+        => Apply(new Request { Action = delta < 0 ? Protocol.Action.QueuePrev : Protocol.Action.QueueNext });
     internal void UserSeekTo(double seconds) => Apply(new Request { Action = Protocol.Action.SeekTo, Value = seconds });
     internal void UserStop() => Apply(new Request { Action = Protocol.Action.Stop });
 
@@ -344,6 +359,10 @@ public class BigScreenController : MonoBehaviour
                     s.Playing = false;
                     s.AnchorVideoTime = 0;
                     s.AnchorNetTime = now;
+                    // Playing an item that is already queued means auto-advance should carry on
+                    // from there, so follow the queue to it.
+                    int at = s.Queue.FindIndex(q => q.Url == (req.Text ?? ""));
+                    s.QueueIndex = at;
                 });
                 break;
             case Protocol.Action.Play:
@@ -366,7 +385,114 @@ public class BigScreenController : MonoBehaviour
             case Protocol.Action.Stop:
                 Session.Mutate(s => { s.VideoUrl = ""; s.Title = ""; s.Playing = false; s.AnchorVideoTime = 0; });
                 break;
+            case Protocol.Action.QueueAdd:
+                QueueAddInternal(req.Text, req.Alt);
+                break;
+            case Protocol.Action.QueueRemove:
+                QueueRemoveInternal((int)Math.Round(req.Value));
+                break;
+            case Protocol.Action.QueueClear:
+                Session.Mutate(s => { s.Queue.Clear(); s.QueueIndex = -1; });
+                break;
+            case Protocol.Action.QueuePlayIndex:
+                QueuePlayIndexInternal((int)Math.Round(req.Value), now);
+                break;
+            case Protocol.Action.QueueNext:
+                QueueStep(1, now);
+                break;
+            case Protocol.Action.QueuePrev:
+                QueueStep(-1, now);
+                break;
         }
+    }
+
+    // --- Shared queue (host side) --------------------------------------------------------
+
+    /// <summary>
+    /// Appends to the shared queue. An empty title is left empty on purpose: the title only
+    /// exists after something resolves the url, and re-resolving to fill in a label would
+    /// mean the host hitting the network because someone queued a link. The panel shows the
+    /// url until the resolve fills the title in.
+    /// </summary>
+    private void QueueAddInternal(string url, string title)
+    {
+        url = (url ?? "").Trim();
+        if (!YtDlp.LooksLikeUrl(url)) { LastError = "Enter a full URL starting with https://"; return; }
+        if (Session.State.Queue.Count >= Protocol.QueueLimit)
+        {
+            LastError = $"The queue is full ({Protocol.QueueLimit} items).";
+            return;
+        }
+        Session.Mutate(s => s.Queue.Add(new Net.QueueEntry { Url = url, Title = title ?? "" }));
+        StatusLine = $"Added to queue ({Session.State.Queue.Count} waiting).";
+    }
+
+    private void QueueRemoveInternal(int index)
+    {
+        var s = Session.State;
+        if (index < 0 || index >= s.Queue.Count) return;
+
+        bool removingCurrent = index == s.QueueIndex;
+        // Removing the item that is playing must not stop the film: it stays on screen and
+        // the index moves to whatever now occupies that slot.
+        int newIndex = s.QueueIndex;
+        if (index < s.QueueIndex) newIndex--;
+        else if (removingCurrent) newIndex = Math.Min(index, s.Queue.Count - 2);
+
+        Session.Mutate(st => { st.Queue.RemoveAt(index); st.QueueIndex = newIndex; });
+    }
+
+    private void QueuePlayIndexInternal(int index, double now)
+    {
+        var s = Session.State;
+        if (index < 0 || index >= s.Queue.Count) return;
+        string url = s.Queue[index].Url;
+        Session.Mutate(st =>
+        {
+            st.QueueIndex = index;
+            st.VideoUrl = url;
+            st.Title = "";
+            st.Playing = false;
+            st.AnchorVideoTime = 0;
+            st.AnchorNetTime = now;
+        });
+    }
+
+    /// <summary>Skips to another queue entry, clamping at both ends.</summary>
+    private void QueueStep(int delta, double now)
+    {
+        var s = Session.State;
+        if (s.Queue.Count == 0) return;
+        int next = Mathf.Clamp(s.QueueIndex + delta, 0, s.Queue.Count - 1);
+        if (next == s.QueueIndex) return;
+        QueuePlayIndexInternal(next, now);
+    }
+
+    /// <summary>
+    /// Rolls into the next queued item when the current one ends. Host only: the queue is
+    /// host-owned state, and a guest that decided when the night ends would fight the host.
+    /// </summary>
+    private void AutoAdvanceQueue(double now)
+    {
+        var s = Session.State;
+        if (s.Queue.Count == 0) return;
+        int next = s.QueueIndex + 1;
+        if (next >= s.Queue.Count)
+        {
+            // End of the queue, not an edge case worth a special message: "Ended." is accurate.
+            return;
+        }
+        string url = s.Queue[next].Url;
+        Plugin.Log.LogInfo($"Queue: advancing to item {next} ({url}).");
+        Session.Mutate(st =>
+        {
+            st.QueueIndex = next;
+            st.VideoUrl = url;
+            st.Title = "";
+            st.AnchorVideoTime = 0;
+            st.AnchorNetTime = now;
+            st.Playing = true;
+        });
     }
 
     /// <summary>
@@ -425,7 +551,7 @@ public class BigScreenController : MonoBehaviour
             {
                 _screen = ScreenObject.Create(s.ScreenPosition, s.ScreenYaw, s.ScreenWidth,
                     Plugin.RenderWidth.Value, Plugin.RenderHeight.Value);
-                _video = new UnityVideoBackend(_screen.Root, _screen.Audio, _screen.Texture);
+                _video = CreateBackend();
                 _video.SetVolume(Plugin.Volume.Value);
                 _loadedPageUrl = null;
                 Plugin.Log.LogInfo($"Screen placed at {s.ScreenPosition}.");
@@ -611,7 +737,17 @@ public class BigScreenController : MonoBehaviour
             _pendingInitialSeek = true;
             _video.Load(r.DirectUrl, r.Duration);
             if (Session.IsHost && Session.State.VideoUrl == pageUrl && Session.State.Title != r.Title)
-                Session.Mutate(x => x.Title = r.Title);
+            {
+                Session.Mutate(x =>
+                {
+                    x.Title = r.Title;
+                    // Backfill the queued entry too, so the "up next" list stops showing a bare
+                    // URL once the title is known. Only the current one needs it.
+                    int i = x.QueueIndex;
+                    if (i >= 0 && i < x.Queue.Count && !string.IsNullOrEmpty(r.Title))
+                        x.Queue[i].Title = r.Title;
+                });
+            }
         });
 
         // A URL that already points at a media file needs no resolving, and Dev.DirectUrl forces
@@ -693,7 +829,17 @@ public class BigScreenController : MonoBehaviour
         {
             if (_video.IsPlaying) _video.Pause();
             if (Session.IsHost && s.Playing)
+            {
+                if (Plugin.AutoAdvance != null && Plugin.AutoAdvance.Value && Session.State.QueueIndex + 1 < Session.State.Queue.Count)
+                {
+                    // Next film rolls in, and everybody's FollowTimeline picks it up from the
+                    // new VideoUrl on their own client. Skipping the "Ended." state entirely
+                    // keeps the status line from flickering through it.
+                    AutoAdvanceQueue(now);
+                    return;
+                }
                 Session.Mutate(x => { x.Playing = false; x.AnchorVideoTime = Math.Max(0, len - 0.3); x.AnchorNetTime = now; });
+            }
             StatusLine = "Ended.";
             LastDrift = 0;
             return;
@@ -806,6 +952,28 @@ public class BigScreenController : MonoBehaviour
             Plugin.Log.LogWarning($"Local player lookup failed: {e.Message}");
             return false;
         }
+    }
+
+    private IVideoBackend CreateBackend()
+    {
+        bool useMpv = Plugin.PreferredBackend.Value == VideoBackendType.Mpv ||
+                      (Plugin.PreferredBackend.Value == VideoBackendType.Auto && Video.Mpv.MpvNative.IsAvailable);
+
+        if (useMpv)
+        {
+            Plugin.Log.LogInfo("Initializing MpvVideoBackend (libmpv).");
+            try
+            {
+                return new MpvVideoBackend(_screen.Root, _screen.Audio, _screen.Texture);
+            }
+            catch (Exception e)
+            {
+                Plugin.Log.LogWarning($"Failed to initialize MpvVideoBackend ({e.Message}); falling back to UnityVideoBackend.");
+            }
+        }
+
+        Plugin.Log.LogInfo("Initializing UnityVideoBackend.");
+        return new UnityVideoBackend(_screen.Root, _screen.Audio, _screen.Texture);
     }
 
     private void TearDownScreen()

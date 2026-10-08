@@ -3,7 +3,7 @@
   <PropertyGroup>
     <AssemblyName>BigScreen</AssemblyName>
     <RootNamespace>BigScreen</RootNamespace>
-    <Version>1.0.5</Version>
+    <Version>1.0.6</Version>
     <Description>A shared in-world screen for watching YouTube together in Big Walk. Everyone with the mod sees and hears the same video, in sync.</Description>
   </PropertyGroup>
 

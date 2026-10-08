@@ -1,4 +1,4 @@
-﻿using System;
+using System;
 using BepInEx;
 using BepInEx.Configuration;
 using BepInEx.Logging;
@@ -21,7 +21,7 @@ public class Plugin : BasePlugin
 {
     public const string Guid = "dev.h223chen.bigscreen";
     public const string Name = "BigScreen";
-    public const string Version = "1.0.5";
+    public const string Version = "1.0.6";
 
     internal static Plugin Instance { get; private set; }
     // `new` because BasePlugin exposes an instance Log; ours is the static shortcut the
@@ -52,10 +52,21 @@ public class Plugin : BasePlugin
     internal static ConfigEntry<float> DriftTolerance;
     internal static ConfigEntry<bool> GuestsCanControl;
     internal static ConfigEntry<bool> AutoPlay;
+    internal static ConfigEntry<bool> AutoAdvance;
     internal static ConfigEntry<World.ComfortMode> KeepAwake;
     internal static ConfigEntry<float> KeepAwakeRadius;
     internal static ConfigEntry<World.ComfortMode> HideCrosshair;
     internal static ConfigEntry<float> HideCrosshairDelay;
+    internal static ConfigEntry<VideoBackendType> PreferredBackend;
+    internal static ConfigEntry<string> MpvPath;
+    internal static ConfigEntry<bool> Subtitles;
+    internal static ConfigEntry<string> SubtitleLanguage;
+    internal static ConfigEntry<bool> SoftwareFastRender;
+    internal static ConfigEntry<float> DemuxerCacheSeconds;
+    internal static ConfigEntry<HwDecodeMode> HwDecode;
+    internal static ConfigEntry<string> TorrentioAddonUrl;
+    internal static ConfigEntry<string> TorboxApiKey;
+    internal static ConfigEntry<string> TorboxSort;
     internal static ConfigEntry<bool> Diagnostics;
 
     // Development helpers. Off by default; see BigScreen.Dev.AutoStart.
@@ -72,6 +83,17 @@ public class Plugin : BasePlugin
     internal static ConfigEntry<bool> ShowDevTools;
 
     private Harmony _harmony;
+
+    /// <summary>
+    /// Writes the config file immediately. During normal play the controller batches saves;
+    /// this is for settings a user just entered by hand (an API key), where losing the value
+    /// to a crash would be infuriating.
+    /// </summary>
+    internal static void SaveConfig()
+    {
+        try { Instance?.Config.Save(); }
+        catch (Exception e) { Log.LogWarning($"Saving the config failed: {e.Message}"); }
+    }
 
     public override void Load()
     {
@@ -204,9 +226,46 @@ public class Plugin : BasePlugin
             "can send anything at all.");
         AutoPlay = Config.Bind("Sync", "AutoPlay", true,
             "Host only: start playing as soon as a loaded video is ready.");
+        AutoAdvance = Config.Bind("Sync", "AutoAdvance", true,
+            "Host only: roll straight into the next queued item when the current one ends. " +
+            "Off leaves the screen paused at the end of each film until someone picks the next one.");
 
         Diagnostics = Config.Bind("Debug", "Diagnostics", false,
             "Write a verbose status line to the BepInEx log every couple of seconds.");
+
+        PreferredBackend = Config.Bind("Video", "Backend", VideoBackendType.Auto,
+            "Video playback backend: Auto (prefers libmpv, falls back to Unity), Mpv, or Unity. " +
+            "Mpv supports all video containers (MKV, MP4, WebM), codecs (HEVC, AV1, H.264), and audio formats.");
+        MpvPath = Config.Bind("Video", "MpvPath", "",
+            "Custom path to mpv-2.dll (Windows) or libmpv.so.2 (Linux). Leave empty for auto-detection.");
+        Subtitles = Config.Bind("Video", "Subtitles", true,
+            "Show embedded subtitles when a stream carries them. libmpv renders them into the video " +
+            "frame, so no extra files are needed. Off if you find them distracting or want more FPS.");
+        SubtitleLanguage = Config.Bind("Video", "SubtitleLanguage", "en",
+            "Preferred subtitle language (ISO 639-2/B code, e.g. en, eng, spa, fre). Left empty means " +
+            "whatever the file marks as its default track.");
+        SoftwareFastRender = Config.Bind("Video", "SoftwareFastRender", true,
+            "Use libmpv's faster software renderer (sw-fast). libmpv has no GPU context inside the game, " +
+            "so frames are converted on the CPU; this trades a little accuracy for frame rate.");
+        DemuxerCacheSeconds = Config.Bind("Video", "DemuxerCacheSeconds", 60f,
+            "How much video libmpv buffers ahead, in seconds (0 = libmpv default). Raise it on a bad " +
+            "connection to smooth out stuttering.");
+        HwDecode = Config.Bind("Video", "HwDecode", HwDecodeMode.AutoCopy,
+            "How libmpv decodes: AutoCopy decodes on the GPU and copies each frame back to system " +
+            "memory (the fastest option this path supports), Auto tries direct hardware decoding, " +
+            "No forces software decoding. AutoCopy is the default because this mod has no GPU " +
+            "context to hand libmpv, so Auto mostly falls back to software and then fails.");
+
+        TorrentioAddonUrl = Config.Bind("Torbox", "TorrentioAddonUrl", "",
+            "Full URL to your Torrentio Stremio addon manifest or base URL. Leave empty to build one " +
+            "from Torbox.ApiKey. Do not share this URL or your log file: it contains your debrid token.");
+        TorboxApiKey = Config.Bind("Torbox", "ApiKey", "",
+            "Your Torbox API key (torbox.app/settings). The mod turns it into a Torrentio addon URL " +
+            "itself, so you never have to hand-build one. Leave both this and TorrentioAddonUrl empty " +
+            "to disable cloud search. Keep it private: it is your Torbox account.");
+        TorboxSort = Config.Bind("Torbox", "SortBy", "",
+            "Torrentio sort order for search results: 'quality' (best first), 'qualitysize', " +
+            "'size' or 'seeders'. Empty uses Torrentio's own default.");
 
         AutoHost = Config.Bind("Dev", "AutoHost", false,
             "Host a save slot straight from the main menu, skipping Host Game / slot / player count. " +
@@ -303,4 +362,21 @@ internal static class Patches
         try { BigScreenController.Instance?.ResetSession("network stopped"); }
         catch (Exception e) { Plugin.Log.LogWarning($"Reset on network stop failed: {e.Message}"); }
     }
+}
+
+public enum VideoBackendType
+{
+    Auto,
+    Mpv,
+    Unity
+}
+
+/// <summary>
+/// How libmpv decodes video. See <c>Video.HwDecode</c> for what each one means here.
+/// </summary>
+public enum HwDecodeMode
+{
+    No,
+    Auto,
+    AutoCopy,
 }

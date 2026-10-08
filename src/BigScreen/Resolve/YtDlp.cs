@@ -77,11 +77,18 @@ internal static class YtDlp
         if (!LooksLikeUrl(url)) return false;
         if (!Uri.TryCreate(url.Trim(), UriKind.Absolute, out var uri)) return false;
 
+        var host = uri.Host.ToLowerInvariant();
+        if (host.Contains("tb-cdn.pw") || host.Contains("torbox.app") || uri.AbsolutePath.Contains("/resolve/torbox/"))
+            return true;
+
         var ext = Path.GetExtension(uri.AbsolutePath);
         return ext.Equals(".mp4", StringComparison.OrdinalIgnoreCase)
+            || ext.Equals(".mkv", StringComparison.OrdinalIgnoreCase)
+            || ext.Equals(".webm", StringComparison.OrdinalIgnoreCase)
             || ext.Equals(".m4v", StringComparison.OrdinalIgnoreCase)
             || ext.Equals(".mov", StringComparison.OrdinalIgnoreCase)
-            || ext.Equals(".webm", StringComparison.OrdinalIgnoreCase);
+            || ext.Equals(".avi", StringComparison.OrdinalIgnoreCase)
+            || ext.Equals(".ts", StringComparison.OrdinalIgnoreCase);
     }
 
     /// <summary>Makes sure the binary exists, downloading it if allowed. Thread-safe.</summary>
@@ -111,8 +118,11 @@ internal static class YtDlp
                 var tmp = path + ".download";
                 File.WriteAllBytes(tmp, bytes);
                 File.Move(tmp, path, overwrite: true);
-                // Note: under Proton/Wine the runtime reports Windows and uses yt-dlp.exe, which is
-                // the only tested path. A native Linux binary would additionally need chmod +x.
+                // A fresh download on Linux/macOS is not executable: the zip/tarball ships it
+                // mode 644, and .NET's File.WriteAllBytes creates it the same way. Without this
+                // the first resolve dies with "Permission denied" on a native Linux install,
+                // which is exactly the install most people trying this outside Windows have.
+                if (!RuntimeInformation.IsOSPlatform(OSPlatform.Windows)) TryMakeExecutable(path);
                 Plugin.Log.LogInfo($"yt-dlp saved to {path} ({bytes.Length / 1024 / 1024} MB).");
                 return null;
             }
@@ -120,6 +130,31 @@ internal static class YtDlp
             {
                 return "Could not download yt-dlp: " + e.Message;
             }
+        }
+    }
+
+    /// <summary>
+    /// Sets the executable bit. On Unix this is a metadata flag, not a file operation, so a
+    /// failure would mean something odd about the install; we only warn.
+    /// </summary>
+    private static void TryMakeExecutable(string path)
+    {
+        try
+        {
+            var psi = new ProcessStartInfo("/bin/chmod", $"+x \"{path}\"")
+            {
+                UseShellExecute = false,
+                CreateNoWindow = true,
+                RedirectStandardOutput = true,
+                RedirectStandardError = true
+            };
+            using var p = Process.Start(psi);
+            p?.WaitForExit(5000);
+        }
+        catch (Exception e)
+        {
+            Plugin.Log.LogWarning($"Could not mark yt-dlp executable ({e.Message}); " +
+                                  "run 'chmod +x " + path + "' by hand if resolving fails.");
         }
     }
 

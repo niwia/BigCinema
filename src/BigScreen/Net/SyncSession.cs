@@ -63,6 +63,13 @@ internal sealed class SyncSession
                 State.GuestsCanControl = Plugin.GuestsCanControl.Value;
                 Commit();
             }
+            // Same for auto-advance: every player sees the queue, so they should also see
+            // whether it will keep rolling without them.
+            if (State.AutoAdvance != (Plugin.AutoAdvance != null && Plugin.AutoAdvance.Value))
+            {
+                State.AutoAdvance = Plugin.AutoAdvance != null && Plugin.AutoAdvance.Value;
+                Commit();
+            }
             // The host's screen geometry is the screen everyone sees, so republish it when
             // the host changes it - raising the screen moves it for the whole lobby.
             if (!Mathf.Approximately(State.ScreenClearance, Plugin.ScreenGroundClearance.Value) ||

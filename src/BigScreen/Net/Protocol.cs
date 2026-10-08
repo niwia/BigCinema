@@ -1,4 +1,5 @@
-﻿using Mirror;
+﻿using System.Collections.Generic;
+using Mirror;
 using UnityEngine;
 
 namespace BigScreen.Net;
@@ -15,8 +16,11 @@ namespace BigScreen.Net;
 internal static class Protocol
 {
     // 2: added ScreenClearance / ScreenWidth. A v1 peer is rejected with a clear
-    // warning rather than misreading the trailing bytes.
-    public const byte Version = 2;
+    //    warning rather than misreading the trailing bytes.
+    // 3: added the shared queue (a list of upcoming items, plus the index of the one
+    //    playing) and the auto-advance flag. A v2 peer is rejected the same way: the
+    //    state message gained trailing fields, so guessing would corrupt everything after.
+    public const byte Version = 3;
 
     public enum Kind : byte
     {
@@ -34,7 +38,20 @@ internal static class Protocol
         Stop = 5,
         Place = 6,
         Remove = 7,
+        QueueAdd = 8,        // req.Text = url, req.Alt = title ("" to resolve later)
+        QueueRemove = 9,     // req.Value = index
+        QueueClear = 10,
+        QueuePlayIndex = 11, // req.Value = index: play that one now
+        QueueNext = 12,
+        QueuePrev = 13,
     }
+
+    /// <summary>
+    /// How many items one queue may hold. The whole queue is written into every state
+    /// message, and Mirror's default channel has an MTU-sized buffer; past this the
+    /// heartbeat would start getting expensive for the other players.
+    /// </summary>
+    public const int QueueLimit = 32;
 
     public static void WriteHeader(NetworkWriter w, Kind kind)
     {
@@ -75,6 +92,38 @@ internal static class Protocol
         NetworkWriterExtensions.WriteBool(w, s.GuestsCanControl);
         NetworkWriterExtensions.WriteFloat(w, s.ScreenClearance);
         NetworkWriterExtensions.WriteFloat(w, s.ScreenWidth);
+        WriteQueue(w, s);
+        NetworkWriterExtensions.WriteBool(w, s.AutoAdvance);
+    }
+
+    private static void WriteQueue(NetworkWriter w, SyncState s)
+    {
+        var queue = s.Queue;
+        int count = queue == null ? 0 : Mathf.Min(queue.Count, QueueLimit);
+        NetworkWriterExtensions.WriteInt(w, count);
+        NetworkWriterExtensions.WriteInt(w, s.QueueIndex);
+        for (int i = 0; i < count; i++)
+        {
+            var item = queue[i];
+            NetworkWriterExtensions.WriteString(w, item?.Url ?? "");
+            NetworkWriterExtensions.WriteString(w, item?.Title ?? "");
+        }
+    }
+
+    private static void ReadQueue(NetworkReader r, SyncState s)
+    {
+        int count = NetworkReaderExtensions.ReadInt(r);
+        s.QueueIndex = NetworkReaderExtensions.ReadInt(r);
+        s.Queue = new List<QueueEntry>();
+        for (int i = 0; i < count; i++)
+        {
+            var item = new QueueEntry
+            {
+                Url = NetworkReaderExtensions.ReadString(r) ?? "",
+                Title = NetworkReaderExtensions.ReadString(r) ?? ""
+            };
+            s.Queue.Add(item);
+        }
     }
 
     public static SyncState ReadState(NetworkReader r)
@@ -92,6 +141,8 @@ internal static class Protocol
         s.GuestsCanControl = NetworkReaderExtensions.ReadBool(r);
         s.ScreenClearance = NetworkReaderExtensions.ReadFloat(r);
         s.ScreenWidth = NetworkReaderExtensions.ReadFloat(r);
+        ReadQueue(r, s);
+        s.AutoAdvance = NetworkReaderExtensions.ReadBool(r);
         return s;
     }
 
@@ -100,6 +151,7 @@ internal static class Protocol
         WriteHeader(w, Kind.Request);
         NetworkWriterExtensions.WriteByte(w, (byte)req.Action);
         NetworkWriterExtensions.WriteString(w, req.Text ?? "");
+        NetworkWriterExtensions.WriteString(w, req.Alt ?? "");
         NetworkWriterExtensions.WriteDouble(w, req.Value);
         NetworkWriterExtensions.WriteVector3(w, req.Position);
         NetworkWriterExtensions.WriteFloat(w, req.Yaw);
@@ -110,6 +162,7 @@ internal static class Protocol
         var req = new Request();
         req.Action = (Action)NetworkReaderExtensions.ReadByte(r);
         req.Text = NetworkReaderExtensions.ReadString(r);
+        req.Alt = NetworkReaderExtensions.ReadString(r);
         req.Value = NetworkReaderExtensions.ReadDouble(r);
         req.Position = NetworkReaderExtensions.ReadVector3(r);
         req.Yaw = NetworkReaderExtensions.ReadFloat(r);
@@ -147,19 +200,52 @@ internal sealed class SyncState
     public float ScreenClearance = 0.6f;
     public float ScreenWidth = 4f;
 
+    /// <summary>
+    /// The shared "up next" list, owned by the host like everything else here. The whole
+    /// list travels with every state message so a guest joining mid-film sees what is
+    /// queued without asking for it.
+    /// </summary>
+    public List<QueueEntry> Queue = new List<QueueEntry>();
+
+    /// <summary>Index into <see cref="Queue"/> of the item now playing, or -1 when empty.</summary>
+    public int QueueIndex = -1;
+
+    /// <summary>Host: roll straight into the next queued item when this one ends.</summary>
+    public bool AutoAdvance = true;
+
     public double ExpectedVideoTime(double netTimeNow)
     {
         if (!Playing) return AnchorVideoTime;
         return AnchorVideoTime + (netTimeNow - AnchorNetTime);
     }
 
-    public SyncState Clone() => (SyncState)MemberwiseClone();
+    public SyncState Clone()
+    {
+        var copy = (SyncState)MemberwiseClone();
+        // The list is a reference: a shallow clone would share it with the original, and
+        // the first "undo" of a queue edit would silently rewrite the live queue.
+        copy.Queue = Queue == null ? new List<QueueEntry>() : new List<QueueEntry>(Queue);
+        return copy;
+    }
+}
+
+/// <summary>One queued item: where it streams from, and the title we already resolved.</summary>
+internal sealed class QueueEntry
+{
+    public string Url = "";
+    public string Title = "";
 }
 
 internal struct Request
 {
     public Protocol.Action Action;
     public string Text;
+
+    /// <summary>
+    /// A second string for actions that need two (a queue item carries its url *and* the
+    /// title we already know, so nobody has to resolve it twice to display it).
+    /// </summary>
+    public string Alt;
     public double Value;
     public Vector3 Position;
     public float Yaw;
