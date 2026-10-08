@@ -1,0 +1,24 @@
+<?xml version="1.0" encoding="utf-8"?>
+<Project>
+  <!--
+    Build settings for everything under tests/.
+
+    These tests must compile without the game: they run against pure-C# shims for the four
+    Unity/Mirror types the queue code touches (Vector3, Mathf, NetworkWriter,
+    NetworkReader), never against BepInEx or the IL2CPP interop assemblies. MSBuild imports
+    only the NEAREST Directory.Build.props, so this file is what deliberately shadows the
+    root one (BepInEx/interop resolution and the reference check it runs) for this tree -
+    "dotnet run" from a fresh clone with no Big Walk install has to work.
+  -->
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+    <!-- Same pinned language version as the plugin; the point is that the logic under test
+         does not depend on a newer compiler, not that it needs one. -->
+    <LangVersion>12.0</LangVersion>
+    <Nullable>disable</Nullable>
+    <ImplicitUsings>disable</ImplicitUsings>
+    <OutputType>Exe</OutputType>
+    <AppendTargetFrameworkToOutputPath>false</AppendTargetFrameworkToOutputPath>
+    <Deterministic>true</Deterministic>
+  </PropertyGroup>
+</Project>

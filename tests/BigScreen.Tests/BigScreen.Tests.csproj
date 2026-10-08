@@ -1,0 +1,10 @@
+﻿<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <AssemblyName>BigScreen.Tests</AssemblyName>
+    <RootNamespace>BigScreen.Tests</RootNamespace>
+    <!-- No PackageReference on purpose: a test framework would mean a NuGet restore, and
+         this project has to build (and run) with nothing but the SDK installed. -->
+  </PropertyGroup>
+
+</Project>

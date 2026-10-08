@@ -1,8 +1,8 @@
 {
   "name": "BigScreen",
-  "version_number": "1.0.5",
+  "version_number": "1.0.6",
   "website_url": "https://github.com/h223chen/BigScreen",
-  "description": "A shared in-world screen for watching YouTube together in Big Walk.",
+  "description": "A shared in-world screen for watching movies and YouTube together in Big Walk.",
   "dependencies": [
     "BepInEx-BepInExPack_IL2CPP-6.0.755"
   ]
