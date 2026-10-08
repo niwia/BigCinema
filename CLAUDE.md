@@ -17,6 +17,7 @@ Design and rationale: `docs/ARCHITECTURE.md`. Background for engineers new to Un
 
 ## Build / deploy
 ```powershell
+dotnet run --project tests/BigScreen.Tests   # pure-logic tests (no game needed, no NuGet)
 .\scripts\build.ps1            # dotnet build against the auto-detected BepInEx folder
 .\scripts\build.ps1 -Deploy    # + copy DLL into <BepInEx>\plugins\BigScreen (game must be closed)
 .\scripts\launch.ps1           # build, deploy, then start the game modded through Gale
@@ -27,6 +28,12 @@ Design and rationale: `docs/ARCHITECTURE.md`. Background for engineers new to Un
 from Steam does not attach the loader. Big Walk opens on a mic-check screen that needs one click
 before the main menu, which no script can do for you. Past that, `Dev.AutoHost` takes it into the
 session on its own.
+
+The tests in `tests/BigScreen.Tests` cover the part of the shared queue that is pure logic: the
+host-side index rules, the state message's field order, and `SyncState.Clone`'s deep copy. They
+compile against hand-written shims (`tests/BigScreen.Tests/Shim.cs`), so they need no BepInEx
+install and no NuGet packages - but that also means the queue logic there is a COPY of
+`BigScreenController`/`Net/Protocol.cs`. Change one, change both.
 
 Per-machine tool paths come from `.env` (gitignored; copy `.env.template`). Real environment
 variables override it. Every key is optional - the scripts auto-detect first.

@@ -1,5 +1,60 @@
 # Changelog
 
+## 1.0.6
+
+### Added
+- Torbox setup no longer needs a hand-built addon URL: `Torbox.ApiKey` holds the key from
+  torbox.app/settings and the mod constructs the same URL the Torrentio configuration page
+  constructs, so the API key field in the panel is the whole setup. `TorrentioAddonUrl`
+  still wins when set, which keeps RealDebrid / Premiumize / AllDebrid usable, and
+  `Torbox.SortBy` orders results by quality, qualitysize, size or seeders.
+- Embedded subtitles play through libmpv (`Video.Subtitles`, `Video.SubtitleLanguage`).
+- libmpv buffers ahead: `Video.DemuxerCacheSeconds` sets how much video is held, and
+  `Video.SoftwareFastRender` turns on libmpv's `sw-fast` path, which is what keeps the
+  single-threaded software renderer real-time.
+- Cinemeta searches are cached for five minutes, since a lobby deciding what to watch types
+  the same titles repeatedly and Cinemeta is rate limited.
+
+### Added
+- **Shared queue.** Anything can be queued while something else is playing - paste a URL and press
+  Queue, or press Queue next to a Torrentio stream - and the list is host-owned state like the
+  screen itself, so everyone sees the same thing. Items can be played out of order or removed by
+  anyone the host trusts, the item playing is marked, and `Sync.AutoAdvance` rolls into the next
+  one when the current film ends.
+- **libmpv is bundled into the package.** `package.ps1` now packs `mpv-2.dll` by default (from
+  `deps/`, the dev profile, or the repo's `mpv` release asset), with a size sanity check so a
+  truncated download cannot ship. `-SkipLibmpv` and `-LibmpvPath` exist for the exceptions. This
+  matters more than its size suggests: without libmpv a Windows tester silently falls back to
+  Unity's VideoPlayer, which cannot play the MKV/HEVC files Torbox returns at all.
+- **GPU decoding (`Video.HwDecode`).** `AutoCopy` is the default: libmpv decodes on the GPU and
+  copies finished frames back into ordinary memory, which is the only hardware path that works
+  when the embedder has no GPU context to offer. `Auto` (direct hwdec) and `No` are still there.
+  The panel now says "GPU decode + software blit" instead of claiming hardware acceleration.
+- A real test project: `tests/BigScreen.Tests` covers the queue rules and the state wire format
+  with no game references (29 assertions, run in CI).
+
+### Changed
+- The sync protocol is version 3. The state message gained the queue and the auto-advance flag,
+  so a 1.0.5 peer is rejected with the existing protocol-version warning rather than misreading
+  the trailing bytes. Both players need to be on this version.
+
+### Fixed
+- The Torbox token was written into the log. Torrentio carries the debrid key in the URL
+  *path*, not the query, so stripping the query was not enough; credential-shaped options
+  are redacted now and the query and fragment are dropped whole. Anyone who pasted a
+  BepInEx log while debugging had their key in it.
+- "No streams found" is no longer the answer for a rejected Torbox key. A result made of
+  magnet links is now reported as exactly that, because a key the addon did not accept and
+  a genuinely missing file look identical from here.
+- yt-dlp is marked executable after download on Linux and macOS. The zip ships it 644, the
+  mod writes it 644, and the first resolve then died with "Permission denied" on a native
+  Linux install - the install most likely to hit it is a non-Windows one.
+- The decoder line claimed "HW Accel". libmpv's software render context has no GPU context,
+  and libmpv's own headers describe it as deliberately slow and CPU-only; it now says
+  "libmpv (software render)".
+- `MpvNative.IsAvailable` loads and unloads the native library, and the panel called it once
+  per redraw. The answer is cached and refreshed a couple of times a second.
+
 ## 1.0.5
 
 ### Changed

@@ -105,6 +105,66 @@ also removes the muxed-MP4 limitation (ffmpeg decodes anything yt-dlp returns, i
 separate 1080p video + audio streams), at the cost of shipping/downloading ffmpeg (~100 MB) and
 software decoding on the CPU. If Risk 1 materialises, this becomes the primary backend.
 
+### Video backends as they now stand (update needed after the libmpv work)
+
+The ffmpeg plan above was superseded: `Video/MpvVideoBackend.cs` uses libmpv through
+`Video/Mpv/MpvNative.cs` instead, and it is the default when a library is found. It accepts
+every container and codec yt-dlp (or a debrid service) can hand over, which is the change that
+made Torbox usable at all - most of that library is MKV/HEVC.
+
+Two facts about it are worth stating plainly, because they are the reason it is not the last
+word:
+
+1. It renders through libmpv's **software** render context (`MPV_RENDER_API_TYPE_SW`). There is
+   no GPU context inside the game, so there is no hardware decoding: libmpv's own headers call
+   that renderer "extremely slow, everything including color conversion, scaling and OSD is done
+   on the CPU, single-threaded". `sw-fast` and a bounded demuxer cache are what keep it
+   real-time at 720p. Hardware decoding needs an OpenGL render context sharing Unity's GL
+   context, which is the obvious next step and a real chunk of work.
+2. Its audio does not go through Unity's `AudioSource`; libmpv outputs directly and the backend
+   feeds it distance and pan every frame. Positional audio therefore exists in both paths, but
+   only the Unity backend respects the game's own mixer and volume stack.
+
+`UnityVideoBackend` remains the fallback, still limited to a progressive muxed MP4 (hence the
+yt-dlp `FormatSelector` default).
+
+### Why not a zero-copy OpenGL render context
+
+The first question anyone asks about the software renderer is "why not hand libmpv a real
+OpenGL context and let it hardware-decode into a texture?" It is the right question, and the
+answer came out of `mpv/client.h` and `mpv/render_gl.h`:
+
+- `mpv_render_context_create` with `MPV_RENDER_API_TYPE_OPENGL` needs
+  `MPV_RENDER_PARAM_OPENGL_INIT_PARAMS`, whose only real member is a `get_proc_address`
+  function pointer. libmpv resolves no GL functions itself and links to no GL library, so
+  without one there is no context. A managed delegate passed through
+  `Marshal.GetFunctionPointerForDelegate` can serve as that pointer (CoreCLR supports it and
+  the delegate is kept alive), so this part is solvable - it just is not the hard part.
+- mpv requires the context to be current on the calling thread for *every*
+  `mpv_render_context_*` call. Unity makes its GL context current on its render thread, not
+  on the thread MonoBehaviour code runs on, so rendering has to be driven from inside the
+  render pass.
+- The frame has to land somewhere. `mpv_render_context_render` writes to an FBO named by
+  `MPV_RENDER_PARAM_OPENGL_FBO`, and Unity exposes no way to create or name a raw GL
+  framebuffer from managed code - so a shim is needed to make the FBO and to blit the result
+  into the `RenderTexture` the screen already uses.
+- On Windows mpv's GL path additionally requires **ANGLE**; Unity on Windows runs D3D11/D3D12,
+  so the two GL contexts would not even be the same kind of context.
+
+That is a small native library plus render-thread plumbing plus a Windows-specific GL stack,
+for a gain that partly evaporates anyway: `hwdec=auto-copy` already removes the decode cost,
+which is the expensive half. What is left on the CPU is colour conversion and scaling of one
+frame per refresh cycle, which `sw-fast` handles. So the GPU path is deferred rather than
+skipped, and the obstacle to record is the FBO, not the curiosity.
+
+### Torbox / Torrentio
+
+`Torbox/TorrentioClient.cs` searches Cinemeta, then asks the user's Torrentio addon for the
+streams it holds. Configuration is either a Torbox API key (from which the mod builds the addon
+URL itself) or a full addon URL. The host resolves, and only the finished direct stream URL goes
+into the shared state, so guests need no debrid account - at the price of every guest downloading
+independently from the same debrid CDN, which is where a shared LAN relay would pay off.
+
 ### Risk 2: hooking Mirror's handler table
 
 > **PARTIALLY HAPPENED — verified 2026-09-19.** Registration works; both server and client

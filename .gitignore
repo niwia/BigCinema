@@ -15,6 +15,10 @@ vendor/*.zip
 tools/
 *.exe
 
+# libmpv for Windows, bundled into packages but never committed (~60-80 MB):
+# drop mpv-2.dll here once, then scripts\package.ps1 picks it up. See README.
+deps/
+
 # Decompiled game output (copyrighted, regenerable with Cpp2IL, enormous)
 gamesrc/
 cpp2il_out/

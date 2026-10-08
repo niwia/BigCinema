@@ -21,17 +21,24 @@
 .PARAMETER IncludeYtDlp
     Bundle yt-dlp.exe (~17 MB) instead of letting the mod download it on first use. Useful
     for a tester whose network blocks the GitHub release download.
-.PARAMETER SkipBuild
-    Package whatever is already built, without rebuilding.
+.PARAMETER SkipLibmpv
+    Do NOT bundle mpv-2.dll (~60-80 MB). Bundling is the default because the libmpv backend
+    is the one that actually plays MKV/HEVC torrent streams, and "install mpv yourself" is
+    the step that makes a movie night fail to start.
+.PARAMETER LibmpvPath
+    A specific mpv-2.dll to bundle, instead of looking one up. Overrides the normal search.
 .EXAMPLE
     .\scripts\package.ps1
     .\scripts\package.ps1 -IncludeYtDlp
+    .\scripts\package.ps1 -SkipLibmpv -IncludeYtDlp
 #>
 [CmdletBinding()]
 param(
     [string]$Configuration = 'Release',
     [switch]$IncludeYtDlp,
-    [switch]$SkipBuild
+    [switch]$SkipBuild,
+    [switch]$SkipLibmpv,
+    [string]$LibmpvPath = ''
 )
 
 Set-StrictMode -Version Latest
@@ -113,6 +120,80 @@ if ($IncludeYtDlp) {
     }
 }
 
+# --- libmpv ---------------------------------------------------------------------------
+# Bundled by default. libmpv is the only backend here that can play what Torbox hands over,
+# which is most often MKV + HEVC: Unity's VideoPlayer is limited to a muxed H.264/AAC MP4, so
+# a player without it silently loses most of the library. The mod will also look on the
+# system PATH, but shipping it is what makes the first run work for everyone.
+$bundledLibmpv = $false
+if ($SkipLibmpv) {
+    Write-Host "-SkipLibmpv given: not bundling mpv-2.dll. Linux players still need system libmpv." -ForegroundColor DarkGray
+} else {
+    $mpv = ''
+    if ($LibmpvPath) {
+        if (-not (Test-Path $LibmpvPath)) { throw "-LibmpvPath '$LibmpvPath' does not exist." }
+        $mpv = (Resolve-Path $LibmpvPath).Path
+    } else {
+        # 1. The repo-local stash. Keep the real binary out of git and download it once:
+        #        deps\mpv-2.dll
+        $localMpv = Join-Path $repo 'deps\mpv-2.dll'
+        if (Test-Path $localMpv) { $mpv = $localMpv }
+        if (-not $mpv) {
+            # 2. A copy the mod already placed next to itself in the dev profile.
+            try {
+                $bep = Get-BepInExPath
+                if ($bep) {
+                    $profileMpv = Join-Path $bep 'plugins\BigScreen\mpv-2.dll'
+                    if (Test-Path $profileMpv) { $mpv = $profileMpv }
+                }
+            } catch { }
+        }
+        if (-not $mpv) {
+            # 3. This repo's own release asset, the same way CI gets build-refs.zip. Upload once:
+            #        gh release create mpv --title "Windows libmpv" --notes "mpv-2.dll for packaging"
+            #        gh release upload mpv deps\mpv-2.dll
+            $ownerRepo = $env:GITHUB_REPOSITORY
+            if (-not $ownerRepo) {
+                # Outside Actions (where this is almost always run) GITHUB_REPOSITORY is empty,
+                # so derive owner/repo from the origin remote instead.
+                try {
+                    $remote = (& git -C $repo remote get-url origin 2>$null)
+                    if ($remote -match 'github\.com[:/]([^/]+/[^/]+?)(\.git)?/?$') { $ownerRepo = $Matches[1] }
+                } catch { }
+            }
+            if ($ownerRepo) {
+                $url = "https://github.com/$ownerRepo/releases/download/mpv/mpv-2.dll"
+                $cache = Join-Path $dist 'mpv-2.dll'
+                if (-not (Test-Path $cache)) {
+                    Write-Host "mpv-2.dll not found locally; downloading from $url" -ForegroundColor DarkGray
+                    try { Invoke-WebRequest -Uri $url -OutFile $cache } catch { }
+                }
+                if (Test-Path $cache) { $mpv = $cache }
+            }
+        }
+    }
+
+    if (-not $mpv) {
+        throw @"
+No mpv-2.dll found. Put one at deps\mpv-2.dll (or pass -LibmpvPath), or upload it as an
+asset of the 'mpv' release:
+    gh release create mpv --title "Windows libmpv" --notes "mpv-2.dll for packaging"
+    gh release upload mpv deps\mpv-2.dll
+Windows players can also get it themselves (see README); pass -SkipLibmpv to package without it.
+"@
+    }
+
+    $mpvSize = (Get-Item $mpv).Length
+    # A real mpv-2.dll is tens of MB. Anything tiny is an HTML error page, a stub, or a
+    # truncated download, and it would load-fail at runtime in a way that looks like a bug.
+    if ($mpvSize -lt 5MB) {
+        throw "mpv-2.dll at $mpv is $([int]($mpvSize / 1MB)) MB - a real one is 50-100 MB. Refusing to bundle it."
+    }
+    Copy-Item $mpv $payload -Force
+    $bundledLibmpv = $true
+    Write-Host "bundled mpv-2.dll ($([int]($mpvSize / 1MB)) MB)" -ForegroundColor DarkGray
+}
+
 $manifest.version_number = $version
 if ($desc) { $manifest.description = $desc }
 # WriteAllText with an explicit no-BOM encoder, NOT Set-Content -Encoding UTF8: on Windows
@@ -172,6 +253,7 @@ Remove-Item $stage -Recurse -Force
 
 # --- Verify what was actually written ---------------------------------------------------
 $required = @('manifest.json', 'icon.png', 'README.md', "BepInEx/plugins/BigScreen/BigScreen.dll")
+if ($bundledLibmpv) { $required += "BepInEx/plugins/BigScreen/mpv-2.dll" }
 $archive = [System.IO.Compression.ZipFile]::OpenRead($zip)
 try {
     $names = $archive.Entries | ForEach-Object { $_.FullName }
@@ -185,6 +267,12 @@ try {
 } finally { $archive.Dispose() }
 
 Write-Host ""
+if ($bundledLibmpv) {
+    Write-Host ("Bundle is {0} MB - mpv-2.dll is most of it, and Thunderstore's own limit is 1 GB." -f `
+        [int]((Get-Item $zip).Length / 1MB)) -ForegroundColor DarkGray
+}
+
+Write-Host ""
 Write-Host "packaged -> $zip  (${size} KB, commit $commit)" -ForegroundColor Green
 Write-Host ""
 Write-Host "Give testers the zip and these steps:" -ForegroundColor Cyan
@@ -192,5 +280,8 @@ Write-Host "  Gale      : Profile -> Import -> Local mod -> pick the zip"
 Write-Host "  r2modman  : Settings -> Import local mod -> pick the zip"
 Write-Host "  By hand   : unzip the BepInEx folder over the profile's BepInEx folder"
 Write-Host ""
-Write-Host "They need BepInExPack_IL2CPP in the profile; the mod downloads yt-dlp itself on first use." -ForegroundColor DarkGray
+Write-Host "They need BepInExPack_IL2CPP in the profile; yt-dlp is$(if($IncludeYtDlp){' bundled'}else{' downloaded on first use'})." -ForegroundColor DarkGray
+if (-not $bundledLibmpv) {
+    Write-Host "mpv-2.dll is NOT in this bundle: Windows players without libmpv installed fall back to Unity's VideoPlayer (muxed MP4 only) and cannot play most Torbox streams." -ForegroundColor Yellow
+}
 Write-Host "To publish instead: https://thunderstore.io/c/big-walk/create/ (docs/MODDING-PRIMER.md, 'Publishing')."
