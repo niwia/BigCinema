@@ -1,0 +1,71 @@
+diff --git a/.github/workflows/build.yml b/.github/workflows/build.yml
+index 7ef8092..c46a645 100644
+--- a/.github/workflows/build.yml
++++ b/.github/workflows/build.yml
+@@ -21,6 +21,21 @@ permissions:
+   contents: read
+ 
+ jobs:
++  # The pure-logic queue tests. They carry no game references, so they run everywhere, they
++  # take a second, and they catch the class of bug that only shows up in a lobby at 2am.
++  test:
++    runs-on: ubuntu-latest
++    steps:
++      - uses: actions/checkout@v4
++
++      - name: Set up .NET SDK
++        uses: actions/setup-dotnet@v4
++        with:
++          dotnet-version: '10.0.x'
++
++      - name: Run queue tests
++        run: dotnet run --project tests/BigScreen.Tests
++
+   build:
+     runs-on: windows-latest
+     env:
+@@ -53,13 +68,37 @@ jobs:
+           dotnet build $proj -c Release -v m "/p:BepInExPath=$env:GITHUB_WORKSPACE/ci-refs"
+           if ($LASTEXITCODE -ne 0) { throw "Build failed" }
+ 
+-      - name: Upload artifact
+-        if: steps.refs.outcome == 'success'
+-        uses: actions/upload-artifact@v4
+-        with:
+-          name: BigScreen
+-          path: src/BigScreen/bin/Release/BigScreen.dll
+-
+       - name: No build references yet
+         if: steps.refs.outcome != 'success'
+         run: echo "build-refs.zip not found on the 'build-refs' release; skipping compile. See the comment at the top of this workflow."
++
++  # The mod has supported a native Linux install since libmpv landed (libmpv.so.2 search
++  # paths, the executable-bit fix on yt-dlp), but CI was Windows-only, so nothing ever
++  # compiled those branches. This runs the same build on Linux and reports whether the
++  # platform-specific code still holds together; it does not need references to be useful
++  # the way the Windows build does.
++  build-linux:
++    runs-on: ubuntu-latest
++    env:
++      REFS_URL: https://github.com/${{ github.repository }}/releases/download/build-refs/build-refs.zip
++    steps:
++      - uses: actions/checkout@v4
++
++      - name: Set up .NET SDK
++        uses: actions/setup-dotnet@v4
++        with:
++          dotnet-version: '10.0.x'
++
++      - name: Download build references
++        shell: bash
++        continue-on-error: true
++        run: |
++          mkdir -p "$GITHUB_WORKSPACE/ci-refs"
++          curl -fsSL -o "$RUNNER_TEMP/build-refs.zip" "$REFS_URL" || exit 1
++          unzip -q -o "$RUNNER_TEMP/build-refs.zip" -d "$GITHUB_WORKSPACE/ci-refs"
++
++      - name: Build plugin
++        if: success()
++        run: |
++          dotnet build "$GITHUB_WORKSPACE/src/BigScreen/BigScreen.csproj" -c Release \
++            "/p:BepInExPath=$GITHUB_WORKSPACE/ci-refs"
